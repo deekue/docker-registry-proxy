@@ -2,7 +2,6 @@ FROM alpine:3.20.0 as base
 
 # If set to 1, enables building debug version of nginx, which is super-useful, but also heavy to build.
 ARG DEBUG_IMAGE="0"
-#ENV PATH="/opt/venv/bin:$PATH"
 
 # apk upgrade in a separate layer (musl is huge)
 RUN apk upgrade --no-cache --update
@@ -30,6 +29,9 @@ RUN if [[ "a$DEBUG_IMAGE" == "a1" ]] ; then echo "Debug build ENABLED." \
       python3 \
     ; else echo "Debug build disabled." ; fi
 
+# add path for pip installed binaries (debug build)
+ENV PATH="/opt/venv/bin:$PATH"
+
 ################################################################################
 FROM base as build
 
@@ -41,6 +43,7 @@ ENV NGINX_VERSION=1.25.5
 ENV PROXY_CONNECT_MODULE_PATCH=proxy_connect_rewrite_102101.patch
 ENV PROXY_CONNECT_MODULE_PATH="/usr/src/ngx_http_proxy_connect_module"
 ENV pkgdir=/build/nginx
+ENV MITMWEB_VERSION=10.3.1
 
 # apk packages required for build
 RUN apk add --no-cache --update \
@@ -118,20 +121,28 @@ RUN mkdir -p "$pkgdir"/etc/nginx/conf.d/ "$pkgdir"/usr/share/nginx/html/ "$pkgdi
  && cd /usr/src/nginx-$NGINX_VERSION \
  && patch -p1 < "$PROXY_CONNECT_MODULE_PATH/patch/$PROXY_CONNECT_MODULE_PATCH" \
  && { echo "Building RELEASE" && ./configure $CONFIG  && make -j$(getconf _NPROCESSORS_ONLN) && make DESTDIR="$pkgdir" install; } \
- && if [ "a$DEBUG_IMAGE" == "a1" ] ; then echo "Building DEBUG" ; ./configure $CONFIG --with-debug && make -j$(getconf _NPROCESSORS_ONLN) && install -m755 objs/nginx "$pkgdir"/usr/sbin/nginx-debug ; else echo "Not building debug" ; fi \
  && rm -rf "$pkgdir"/etc/nginx/html/ "$pkgdir"/var/run \
  && install -m644 html/index.html "$pkgdir"/usr/share/nginx/html/ \
  && install -m644 html/50x.html "$pkgdir"/usr/share/nginx/html/ \
  && strip "$pkgdir"/usr/sbin/nginx*
+
+RUN if [ "a$DEBUG_IMAGE" == "a1" ] ; then \
+    echo "Building DEBUG" \
+ && cd /usr/src/nginx-$NGINX_VERSION \
+ && ./configure $CONFIG --with-debug \
+ && make -j$(getconf _NPROCESSORS_ONLN) \
+ && install -m755 objs/nginx "$pkgdir"/usr/sbin/nginx-debug \
+  ; else echo "Not building debug" ; fi
 
 # Build mitmproxy via pip. This is heavy, takes minutes do build and creates a 90mb+ layer. Oh well.
 WORKDIR /opt/venv
 RUN if [[ "a$DEBUG_IMAGE" == "a1" ]] ; then \
     echo "Debug build ENABLED." \
  && python3 -m venv /opt/venv \
- && /opt/venv/bin/pip --disable-pip-version-check install --use-pep517 --prefer-binary --no-cache-dir mitmproxy \
- && mitmproxy --version && mitmweb --version \
-    else echo "Debug build disabled." ; fi
+ && /opt/venv/bin/pip --disable-pip-version-check install --use-pep517 --prefer-binary --no-cache-dir mitmproxy==$MITMWEB_VERSION \
+ && mitmproxy --version \
+ && mitmweb --version \
+  ; else echo "Debug build disabled." ; fi
 
 ################################################################################
 FROM base as registry-proxy
