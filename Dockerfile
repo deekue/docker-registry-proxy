@@ -34,6 +34,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 ################################################################################
 FROM base as build
+LABEL stage=builder
 
 # If set to 1, enables building debug version of nginx, which is super-useful, but also heavy to build.
 ARG DEBUG_IMAGE="0"
@@ -134,7 +135,7 @@ RUN if [ "a$DEBUG_IMAGE" == "a1" ] ; then \
  && install -m755 objs/nginx "$pkgdir"/usr/sbin/nginx-debug \
   ; else echo "Not building debug" ; fi
 
-# Build mitmproxy via pip. This is heavy, takes minutes do build and creates a 90mb+ layer. Oh well.
+# Build mitmproxy via pip. This is heavy, takes minutes to build and creates a 90mb+ layer. Oh well.
 WORKDIR /opt/venv
 RUN if [[ "a$DEBUG_IMAGE" == "a1" ]] ; then \
     echo "Debug build ENABLED." \
