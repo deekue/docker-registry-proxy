@@ -1,7 +1,6 @@
-FROM alpine:3.20.0 as base
+ARG RELEASE=prod
 
-# If set to 1, enables building debug version of nginx, which is super-useful, but also heavy to build.
-ARG DEBUG_IMAGE="0"
+FROM alpine:3.20.0 as prod-base
 
 # apk upgrade in a separate layer (musl is huge)
 RUN apk upgrade --no-cache --update
@@ -18,33 +17,29 @@ RUN apk add --no-cache --update \
       tzdata \
       zlib 
 
+################################################################################
+FROM prod-base as debug-base
 # apk packages required for both debug build and debug runtime
-RUN if [[ "a$DEBUG_IMAGE" == "a1" ]] ; then echo "Debug build ENABLED." \
- && apk add --no-cache --update \
+RUN apk add --no-cache --update \
       libffi \
       libstdc++ \
       py3-certifi \
       py3-idna \
       py3-six \
-      python3 \
-    ; else echo "Debug build disabled." ; fi
+      python3
 
 # add path for pip installed binaries (debug build)
 ENV PATH="/opt/venv/bin:$PATH"
 
 ################################################################################
-FROM base as build
+FROM ${RELEASE}-base as prod-build
 LABEL stage=builder
-
-# If set to 1, enables building debug version of nginx, which is super-useful, but also heavy to build.
-ARG DEBUG_IMAGE="0"
 
 # nginx 1.25.5 is the latest version supported by connect module
 ENV NGINX_VERSION=1.25.5
 ENV PROXY_CONNECT_MODULE_PATCH=proxy_connect_rewrite_102101.patch
 ENV PROXY_CONNECT_MODULE_PATH="/usr/src/ngx_http_proxy_connect_module"
 ENV pkgdir=/build/nginx
-ENV MITMWEB_VERSION=10.3.1
 
 # apk packages required for build
 RUN apk add --no-cache --update \
@@ -57,22 +52,6 @@ RUN apk add --no-cache --update \
       patch \
       pcre-dev \
       zlib-dev
-
-# apk packages required for debug build
-RUN if [[ "a$DEBUG_IMAGE" == "a1" ]] ; then \
-      echo "Debug build ENABLED." ; \
-      apk add --no-cache --update \
-        bsd-compat-headers \
-        cargo \
-        g++ \
-        libffi-dev \
-        openssl-dev \
-        py3-pip \
-        py3-setuptools \
-        py3-wheel \
-        python3-dev \
-        su-exec \
-      ; else echo "Debug build disabled." ; fi
 
 WORKDIR /usr/src
 
@@ -127,37 +106,44 @@ RUN mkdir -p "$pkgdir"/etc/nginx/conf.d/ "$pkgdir"/usr/share/nginx/html/ "$pkgdi
  && install -m644 html/50x.html "$pkgdir"/usr/share/nginx/html/ \
  && strip "$pkgdir"/usr/sbin/nginx*
 
-RUN if [ "a$DEBUG_IMAGE" == "a1" ] ; then \
-    echo "Building DEBUG" \
- && cd /usr/src/nginx-$NGINX_VERSION \
+################################################################################
+FROM prod-build as debug-build
+
+ENV MITMWEB_VERSION=10.3.1
+
+# apk packages required for debug build
+RUN apk add --no-cache --update \
+      bsd-compat-headers \
+      cargo \
+      g++ \
+      libffi-dev \
+      openssl-dev \
+      py3-pip \
+      py3-setuptools \
+      py3-wheel \
+      python3-dev \
+      su-exec
+
+RUN cd /usr/src/nginx-$NGINX_VERSION \
  && ./configure $CONFIG --with-debug \
  && make -j$(getconf _NPROCESSORS_ONLN) \
- && install -m755 objs/nginx "$pkgdir"/usr/sbin/nginx-debug \
-  ; else echo "Not building debug" ; fi
+ && install -m755 objs/nginx "$pkgdir"/usr/sbin/nginx-debug
 
 # Build mitmproxy via pip. This is heavy, takes minutes to build and creates a 90mb+ layer. Oh well.
 WORKDIR /opt/venv
-RUN if [[ "a$DEBUG_IMAGE" == "a1" ]] ; then \
-    echo "Debug build ENABLED." \
- && python3 -m venv /opt/venv \
+RUN python3 -m venv /opt/venv \
  && /opt/venv/bin/pip --disable-pip-version-check install --use-pep517 --prefer-binary --no-cache-dir mitmproxy==$MITMWEB_VERSION \
  && mitmproxy --version \
- && mitmweb --version \
-  ; else echo "Debug build disabled." ; fi
+ && mitmweb --version
 
 ################################################################################
-FROM base as registry-proxy
-
-# If set to 1, enables mitmproxy, which helps a lot in debugging, but is super heavy to build.
-ARG DEBUG_IMAGE
+FROM ${RELEASE}-base as prod-postinstall
 
 # Link image to original repository on GitHub
 LABEL org.opencontainers.image.source https://github.com/rpardini/docker-registry-proxy
 
 # copy nginx from build layer
-COPY --from=build /build/nginx /
-# copy mitmweb from build layer
-COPY --from=build /opt/venv /opt/venv
+COPY --from=prod-build /build/nginx /
 
 # Create the cache directory and CA directory
 RUN mkdir -p /docker_mirror_cache /ca \
@@ -190,9 +176,6 @@ EXPOSE 3128
 EXPOSE 8081
 # In debug-hub mode, 8082 exposes the mitmweb interface (for outgoing requests to DockerHub)
 EXPOSE 8082
-
-# Required for mitmproxy
-ENV LANG=en_US.UTF-8
 
 ## Default envs.
 # A space delimited list of registries we should proxy and cache; this is in addition to the central DockerHub.
@@ -279,3 +262,14 @@ ENV PROXY_CONNECT_SEND_TIMEOUT="60s"
 
 # Did you want a shell? Sorry, the entrypoint never returns, because it runs nginx itself. Use 'docker exec' if you need to mess around internally.
 ENTRYPOINT ["/entrypoint.sh"]
+
+################################################################################
+FROM prod-postinstall as debug-postinstall
+
+# copy mitmweb from build layer
+COPY --from=debug-build /opt/venv /opt/venv
+
+# Required for mitmproxy
+ENV LANG=en_US.UTF-8
+
+FROM ${RELEASE}-postinstall as final

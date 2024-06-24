@@ -11,11 +11,11 @@ workflow:
       when: never
     - if: '$CI_COMMIT_BRANCH != "coreweave"'
       variables:
-          DEBUG_IMAGE: "1"
+          RELEASE: "debug"
           IMAGE_SUFFIX: "-debug"
     - if: '$CI_COMMIT_BRANCH == "coreweave"'
       variables:
-          DEBUG_IMAGE: "0"
+          RELEASE: "prod"
           IMAGE_SUFFIX: ""
 
 stages:
@@ -39,7 +39,7 @@ build:
     /kaniko/executor \
       $KANIKO_ADDTL_ARGS \
       --context ${CI_PROJECT_DIR} \
-      --build-arg DEBUG_IMAGE=${DEBUG_IMAGE} \
+      --build-arg RELEASE=${RELEASE} \
       --build-arg IMAGE_SUFFIX=${IMAGE_SUFFIX} \
       --dockerfile $DOCKERFILE \
       --destination $REF_IMAGE \
